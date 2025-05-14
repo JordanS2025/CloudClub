@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'firebase_auth_service.dart'; // (put your auth functions here)
 
 class AuthPage extends StatefulWidget {
+  const AuthPage({super.key});
+
   @override
   _AuthPageState createState() => _AuthPageState();
 }
@@ -22,11 +24,11 @@ class _AuthPageState extends State<AuthPage> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(isLogin ? "Login to CloudClub" : "Sign Up for CloudClub",
-                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-              SizedBox(height: 20),
-              TextField(controller: emailController, decoration: InputDecoration(labelText: "Email")),
-              TextField(controller: passwordController, obscureText: true, decoration: InputDecoration(labelText: "Password")),
-              SizedBox(height: 20),
+                  style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 20),
+              TextField(controller: emailController, decoration: const InputDecoration(labelText: "Email")),
+              TextField(controller: passwordController, obscureText: true, decoration: const InputDecoration(labelText: "Password")),
+              const SizedBox(height: 20),
               ElevatedButton(
                 onPressed: () {
                   if (isLogin) {
