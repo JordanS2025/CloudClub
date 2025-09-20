@@ -8,7 +8,17 @@ import 'files_page.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
+
+  try {
+    await Firebase.initializeApp();
+    print('Firebase initialized successfully');
+  } catch (e) {
+    print('Firebase initialization error: $e');
+    print('Error details: ${e.toString()}');
+    // Don't continue without Firebase - this will cause auth errors
+    rethrow;
+  }
+
   runApp(MyApp());
 }
 

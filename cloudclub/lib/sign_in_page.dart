@@ -231,11 +231,21 @@ class _AuthPageState extends State<AuthPage> {
                   ),
                   const SizedBox(height: 16),
                   if (errorMessage != null)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 8.0),
+                    Container(
+                      width: 320,
+                      padding: const EdgeInsets.all(12.0),
+                      decoration: BoxDecoration(
+                        color: Colors.red.shade50,
+                        border: Border.all(color: Colors.red.shade200),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
                       child: Text(
                         errorMessage!,
-                        style: const TextStyle(color: Colors.red),
+                        style: TextStyle(
+                          color: Colors.red.shade700,
+                          fontSize: 14,
+                        ),
+                        textAlign: TextAlign.center,
                       ),
                     ),
                   if (isLoading)
