@@ -176,7 +176,8 @@ class _HomePageState extends State<HomePage> {
         });
 
         // List all files in user's storage folder
-        final storageRef = FirebaseStorage.instance.ref().child('uploads');
+        final storageRef =
+            FirebaseStorage.instance.ref().child('uploads/${user.uid}');
         final result = await storageRef.listAll();
 
         double totalSize = 0.0;
