@@ -1,3 +1,5 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 class FilesPage extends StatefulWidget {
@@ -31,31 +33,39 @@ class _FilesPageState extends State<FilesPage> {
         isLoading = true;
       });
 
-      // For demo purposes, we'll show sample files
-      // In a real app, you would load files from Firebase Storage
-      await Future.delayed(const Duration(milliseconds: 500));
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        setState(() {
+          files = [];
+          isLoading = false;
+        });
+        return;
+      }
+
+      final query = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .collection('files')
+          .orderBy('uploadedAt', descending: true)
+          .get();
+
+      final loadedFiles = query.docs.map((doc) {
+        final data = doc.data();
+        final name = data['name'] as String? ?? 'Unknown file';
+        final size = (data['size'] as num?)?.toInt() ?? 0;
+        final type = _detectFileType(name);
+        final uploadedAt = (data['uploadedAt'] as Timestamp?)?.toDate();
+
+        return FileItem(
+          name: name,
+          sizeBytes: size,
+          type: type,
+          lastModified: uploadedAt,
+        );
+      }).toList();
 
       setState(() {
-        files = [
-          FileItem(
-            name: 'selfie.png',
-            size: '1.2 MB',
-            type: FileType.image,
-            lastModified: DateTime.now().subtract(const Duration(days: 1)),
-          ),
-          FileItem(
-            name: 'notes.pdf',
-            size: '800 KB',
-            type: FileType.pdf,
-            lastModified: DateTime.now().subtract(const Duration(days: 2)),
-          ),
-          FileItem(
-            name: 'invoice.docx',
-            size: '25 KB',
-            type: FileType.document,
-            lastModified: DateTime.now().subtract(const Duration(days: 3)),
-          ),
-        ];
+        files = loadedFiles;
         isLoading = false;
       });
     } catch (e) {
@@ -180,42 +190,45 @@ class _FilesPageState extends State<FilesPage> {
 
             // Files list
             Expanded(
-              child:
-                  isLoading
-                      ? const Center(
+              child: RefreshIndicator(
+                onRefresh: _loadFiles,
+                child: isLoading
+                    ? const Center(
                         child: CircularProgressIndicator(
                           color: Color(0xFF2196F3),
                         ),
                       )
-                      : filteredFiles.isEmpty
-                      ? const Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(
-                              Icons.folder_open,
-                              size: 64,
-                              color: Colors.grey,
+                    : filteredFiles.isEmpty
+                        ? const Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(
+                                  Icons.folder_open,
+                                  size: 64,
+                                  color: Colors.grey,
+                                ),
+                                SizedBox(height: 16),
+                                Text(
+                                  'No files found',
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    color: Colors.grey,
+                                  ),
+                                ),
+                              ],
                             ),
-                            SizedBox(height: 16),
-                            Text(
-                              'No files found',
-                              style: TextStyle(
-                                fontSize: 18,
-                                color: Colors.grey,
-                              ),
-                            ),
-                          ],
-                        ),
-                      )
-                      : ListView.builder(
-                        padding: const EdgeInsets.symmetric(horizontal: 24),
-                        itemCount: filteredFiles.length,
-                        itemBuilder: (context, index) {
-                          final file = filteredFiles[index];
-                          return FileListItem(file: file);
-                        },
-                      ),
+                          )
+                        : ListView.builder(
+                            padding:
+                                const EdgeInsets.symmetric(horizontal: 24),
+                            itemCount: filteredFiles.length,
+                            itemBuilder: (context, index) {
+                              final file = filteredFiles[index];
+                              return FileListItem(file: file);
+                            },
+                          ),
+              ),
             ),
           ],
         ),
@@ -254,13 +267,13 @@ class _FilesPageState extends State<FilesPage> {
 // File item model
 class FileItem {
   final String name;
-  final String size;
+  final int sizeBytes;
   final FileType type;
-  final DateTime lastModified;
+  final DateTime? lastModified;
 
   FileItem({
     required this.name,
-    required this.size,
+    required this.sizeBytes,
     required this.type,
     required this.lastModified,
   });
@@ -325,7 +338,7 @@ class FileListItem extends StatelessWidget {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  file.size,
+                  _formatDate(file.lastModified),
                   style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
                 ),
               ],
@@ -337,7 +350,7 @@ class FileListItem extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               Text(
-                file.size,
+                _formatSize(file.sizeBytes),
                 style: const TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
@@ -346,7 +359,7 @@ class FileListItem extends StatelessWidget {
               ),
               const SizedBox(height: 4),
               Text(
-                file.size,
+                file.type.name,
                 style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
               ),
             ],
@@ -373,4 +386,39 @@ class FileListItem extends StatelessWidget {
         return Icons.insert_drive_file;
     }
   }
+
+  String _formatSize(int bytes) {
+    if (bytes <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    int unitIndex = 0;
+    double size = bytes.toDouble();
+
+    while (size >= 1024 && unitIndex < units.length - 1) {
+      size /= 1024;
+      unitIndex++;
+    }
+
+    return '${size.toStringAsFixed(1)} ${units[unitIndex]}';
+  }
+
+  String _formatDate(DateTime? date) {
+    if (date == null) return 'Unknown date';
+    return '${date.month}/${date.day}/${date.year}';
+  }
+}
+
+FileType _detectFileType(String name) {
+  final lower = name.toLowerCase();
+  if (lower.endsWith('.png') || lower.endsWith('.jpg') ||
+      lower.endsWith('.jpeg')) {
+    return FileType.image;
+  }
+  if (lower.endsWith('.pdf')) {
+    return FileType.pdf;
+  }
+  if (lower.endsWith('.doc') || lower.endsWith('.docx') ||
+      lower.endsWith('.txt')) {
+    return FileType.document;
+  }
+  return FileType.other;
 }

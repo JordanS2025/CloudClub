@@ -1,5 +1,11 @@
-import 'package:flutter/material.dart';
+import 'dart:io' show File;
+
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 
 class UploadPage extends StatefulWidget {
   const UploadPage({super.key});
@@ -9,7 +15,7 @@ class UploadPage extends StatefulWidget {
 }
 
 class _UploadPageState extends State<UploadPage> {
-  String? selectedFileName;
+  PlatformFile? selectedFile;
   double uploadProgress = 0.0;
   bool isUploading = false;
   bool isFileSelected = false;
@@ -127,7 +133,7 @@ class _UploadPageState extends State<UploadPage> {
                                 ),
                                 const SizedBox(height: 12),
                                 Text(
-                                  selectedFileName ?? 'File Selected',
+                                  selectedFile?.name ?? 'File Selected',
                                   style: const TextStyle(
                                     fontSize: 16,
                                     fontWeight: FontWeight.w600,
@@ -276,9 +282,8 @@ class _UploadPageState extends State<UploadPage> {
       );
 
       if (result != null && result.files.isNotEmpty) {
-        final file = result.files.first;
         setState(() {
-          selectedFileName = file.name;
+          selectedFile = result.files.first;
           isFileSelected = true;
           uploadProgress = 0.0;
         });
@@ -296,7 +301,18 @@ class _UploadPageState extends State<UploadPage> {
   }
 
   Future<void> _uploadFile() async {
-    if (!isFileSelected) return;
+    if (!isFileSelected || selectedFile == null) return;
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please sign in to upload files.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
 
     setState(() {
       isUploading = true;
@@ -304,18 +320,47 @@ class _UploadPageState extends State<UploadPage> {
     });
 
     try {
-      // Simulate file upload with progress
-      // In a real app, you would upload to Firebase Storage here
-      for (int i = 0; i <= 100; i += 10) {
-        await Future.delayed(const Duration(milliseconds: 200));
-        if (mounted) {
-          setState(() {
-            uploadProgress = i / 100;
-          });
+      final PlatformFile file = selectedFile!;
+      final storageRef = FirebaseStorage.instance
+          .ref()
+          .child('uploads/${user.uid}/${file.name}');
+
+      UploadTask uploadTask;
+      final metadata = SettableMetadata(contentType: file.mimeType);
+
+      if (kIsWeb) {
+        if (file.bytes == null) {
+          throw Exception('No file data available for web upload.');
         }
+        uploadTask = storageRef.putData(file.bytes!, metadata);
+      } else {
+        final filePath = file.path;
+        if (filePath == null) {
+          throw Exception('File path missing for upload.');
+        }
+        uploadTask = storageRef.putFile(File(filePath), metadata);
       }
 
-      // Upload completed
+      uploadTask.snapshotEvents.listen((TaskSnapshot snapshot) {
+        final totalBytes = snapshot.totalBytes;
+        if (totalBytes > 0) {
+          setState(() {
+            uploadProgress = snapshot.bytesTransferred / totalBytes;
+          });
+        }
+      });
+
+      final TaskSnapshot completedSnapshot = await uploadTask;
+      final downloadUrl = await completedSnapshot.ref.getDownloadURL();
+      final uploadedBytes = completedSnapshot.totalBytes;
+
+      await _saveFileMetadata(
+        user.uid,
+        file.name,
+        uploadedBytes,
+        downloadUrl,
+      );
+
       if (mounted) {
         setState(() {
           isUploading = false;
@@ -329,11 +374,10 @@ class _UploadPageState extends State<UploadPage> {
           ),
         );
 
-        // Reset after successful upload
         Future.delayed(const Duration(seconds: 2), () {
           if (mounted) {
             setState(() {
-              selectedFileName = null;
+              selectedFile = null;
               isFileSelected = false;
               uploadProgress = 0.0;
             });
@@ -354,5 +398,36 @@ class _UploadPageState extends State<UploadPage> {
         );
       }
     }
+  }
+
+  Future<void> _saveFileMetadata(
+    String userId,
+    String fileName,
+    int sizeBytes,
+    String downloadUrl,
+  ) async {
+    final userDoc = FirebaseFirestore.instance.collection('users').doc(userId);
+
+    await FirebaseFirestore.instance
+        .collection('users')
+        .doc(userId)
+        .collection('files')
+        .add({
+      'name': fileName,
+      'size': sizeBytes,
+      'downloadUrl': downloadUrl,
+      'path': 'uploads/$userId/$fileName',
+      'uploadedAt': FieldValue.serverTimestamp(),
+    });
+
+    await userDoc.set(
+      {
+        'storage': {
+          'used': FieldValue.increment(sizeBytes),
+          'lastUpdated': FieldValue.serverTimestamp(),
+        },
+      },
+      SetOptions(merge: true),
+    );
   }
 }
