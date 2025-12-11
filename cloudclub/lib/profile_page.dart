@@ -14,11 +14,14 @@ class _ProfilePageState extends State<ProfilePage> {
   String? lastName;
   String? email;
   bool isLoading = true;
+  bool isAutoBackupLoading = true;
+  bool autoBackupEnabled = false;
 
   @override
   void initState() {
     super.initState();
     _loadUserProfile();
+    _loadAutoBackupPreference();
   }
 
   Future<void> _loadUserProfile() async {
@@ -57,6 +60,92 @@ class _ProfilePageState extends State<ProfilePage> {
       setState(() {
         isLoading = false;
       });
+    }
+  }
+
+  Future<void> _loadAutoBackupPreference() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        setState(() {
+          isAutoBackupLoading = false;
+        });
+        return;
+      }
+
+      final doc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .get();
+
+      final settings = doc.data()?['settings'] as Map<String, dynamic>?;
+      setState(() {
+        autoBackupEnabled = settings?['autoBackupPhotos'] == true;
+        isAutoBackupLoading = false;
+      });
+    } catch (e) {
+      print('Error loading auto-backup preference: $e');
+      setState(() {
+        isAutoBackupLoading = false;
+      });
+    }
+  }
+
+  Future<void> _toggleAutoBackup(bool value) async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Please sign in to manage backups.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
+      }
+
+      setState(() {
+        autoBackupEnabled = value;
+        isAutoBackupLoading = true;
+      });
+
+      await FirebaseFirestore.instance.collection('users').doc(user.uid).set(
+        {
+          'settings': {
+            'autoBackupPhotos': value,
+            'autoBackupUpdatedAt': FieldValue.serverTimestamp(),
+          },
+        },
+        SetOptions(merge: true),
+      );
+
+      if (mounted) {
+        setState(() {
+          isAutoBackupLoading = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              value
+                  ? 'Auto-backup for photos enabled. New photos will sync automatically.'
+                  : 'Auto-backup paused. You can re-enable it anytime.',
+            ),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          isAutoBackupLoading = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to update auto-backup: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 
@@ -169,6 +258,71 @@ class _ProfilePageState extends State<ProfilePage> {
 
                       // Divider
                       Container(height: 1, color: Colors.grey.shade300),
+
+                      const SizedBox(height: 24),
+
+                      // Auto-backup toggle
+                      Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFE3F2FD),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: Colors.grey.shade200),
+                        ),
+                        child: Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                shape: BoxShape.circle,
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withValues(alpha: 0.05),
+                                    blurRadius: 8,
+                                    offset: const Offset(0, 4),
+                                  ),
+                                ],
+                              ),
+                              child: const Icon(
+                                Icons.backup,
+                                color: Color(0xFF1976D2),
+                              ),
+                            ),
+                            const SizedBox(width: 16),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text(
+                                    'Auto-backup photos',
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                      color: Color(0xFF1976D2),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    autoBackupEnabled
+                                        ? 'Photos are backed up when you are online.'
+                                        : 'Keep your memories safe with automatic uploads.',
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      color: Colors.grey.shade700,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Switch(
+                              value: autoBackupEnabled,
+                              activeColor: const Color(0xFF1976D2),
+                              onChanged: isAutoBackupLoading ? null : _toggleAutoBackup,
+                            ),
+                          ],
+                        ),
+                      ),
 
                       const SizedBox(height: 24),
 
