@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 class FilesPage extends StatefulWidget {
   const FilesPage({super.key});
@@ -12,13 +13,16 @@ class FilesPage extends StatefulWidget {
 class _FilesPageState extends State<FilesPage> {
   String searchQuery = '';
   List<FileItem> files = [];
+  List<FolderItem> folders = [];
   bool isLoading = true;
+  bool isLoadingFolders = true;
   final TextEditingController _searchController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     _loadFiles();
+    _loadFolders();
   }
 
   @override
@@ -55,12 +59,18 @@ class _FilesPageState extends State<FilesPage> {
         final size = (data['size'] as num?)?.toInt() ?? 0;
         final type = _detectFileType(name);
         final uploadedAt = (data['uploadedAt'] as Timestamp?)?.toDate();
+        final downloadUrl = data['downloadUrl'] as String?;
+        final sharing = data['sharing'] as Map<String, dynamic>?;
 
         return FileItem(
+          id: doc.id,
           name: name,
           sizeBytes: size,
           type: type,
           lastModified: uploadedAt,
+          downloadUrl: downloadUrl,
+          sharingVisibility: sharing?['visibility'] as String?,
+          sharingExpiresAt: (sharing?['expiresAt'] as Timestamp?)?.toDate(),
         );
       }).toList();
 
@@ -80,6 +90,237 @@ class _FilesPageState extends State<FilesPage> {
           ),
         );
       }
+    }
+  }
+
+  Future<void> _loadFolders() async {
+    try {
+      setState(() {
+        isLoadingFolders = true;
+      });
+
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        setState(() {
+          folders = [];
+          isLoadingFolders = false;
+        });
+        return;
+      }
+
+      final query = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .collection('folders')
+          .orderBy('createdAt', descending: true)
+          .get();
+
+      final loadedFolders = query.docs.map((doc) {
+        final data = doc.data();
+        return FolderItem(
+          id: doc.id,
+          name: data['name'] as String? ?? 'Untitled folder',
+          description: data['description'] as String? ?? '',
+          fileCount: (data['fileCount'] as num?)?.toInt() ?? 0,
+        );
+      }).toList();
+
+      setState(() {
+        folders = loadedFolders;
+        isLoadingFolders = false;
+      });
+    } catch (e) {
+      setState(() {
+        isLoadingFolders = false;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error loading folders: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _showCreateFolderDialog() async {
+    final nameController = TextEditingController();
+    final descriptionController = TextEditingController();
+
+    await showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('New folder/album'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameController,
+                decoration: const InputDecoration(
+                  labelText: 'Name',
+                  hintText: 'Vacation 2024',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: descriptionController,
+                decoration: const InputDecoration(
+                  labelText: 'Description (optional)',
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                await _createFolder(
+                  nameController.text.trim(),
+                  descriptionController.text.trim(),
+                );
+                if (context.mounted) {
+                  Navigator.of(context).pop();
+                }
+              },
+              child: const Text('Create'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _createFolder(String name, String description) async {
+    if (name.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Folder name is required'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please sign in to create folders.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .collection('folders')
+          .add({
+        'name': name,
+        'description': description,
+        'fileCount': 0,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+
+      await _loadFolders();
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Folder "$name" created'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not create folder: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  Future<void> _handleShare(
+    FileItem file,
+    ShareVisibility visibility,
+  ) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please sign in to share files.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    final link = _buildShareLink(file, visibility);
+    DateTime? expiresAt;
+    if (visibility == ShareVisibility.temporary) {
+      expiresAt = DateTime.now().add(const Duration(hours: 24));
+    }
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .collection('files')
+          .doc(file.id)
+          .set(
+        {
+          'sharing': {
+            'visibility': visibility.name,
+            'link': link,
+            'expiresAt': expiresAt != null
+                ? Timestamp.fromDate(expiresAt)
+                : FieldValue.delete(),
+            'updatedAt': FieldValue.serverTimestamp(),
+          },
+        },
+        SetOptions(merge: true),
+      );
+
+      await Clipboard.setData(ClipboardData(text: link));
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Share link copied (${visibility.name}).${expiresAt != null ? ' Expires in 24h.' : ''}',
+            ),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not create share link: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  String _buildShareLink(FileItem file, ShareVisibility visibility) {
+    final baseLink = file.downloadUrl ?? 'https://cloudclub.example/${file.id}';
+    switch (visibility) {
+      case ShareVisibility.public:
+        return '$baseLink?visibility=public';
+      case ShareVisibility.private:
+        return '$baseLink?visibility=private';
+      case ShareVisibility.temporary:
+        return '$baseLink?visibility=temporary';
     }
   }
 
@@ -188,10 +429,60 @@ class _FilesPageState extends State<FilesPage> {
 
             const SizedBox(height: 24),
 
+            // Folders and albums
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              child: Row(
+                children: [
+                  const Text(
+                    'Albums & Folders',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.black,
+                    ),
+                  ),
+                  const Spacer(),
+                  TextButton.icon(
+                    onPressed: _showCreateFolderDialog,
+                    icon: const Icon(Icons.create_new_folder),
+                    label: const Text('New'),
+                  ),
+                ],
+              ),
+            ),
+            SizedBox(
+              height: 120,
+              child: isLoadingFolders
+                  ? const Center(child: CircularProgressIndicator())
+                  : folders.isEmpty
+                      ? Center(
+                          child: Text(
+                            'Create your first album to stay organized.',
+                            style: TextStyle(color: Colors.grey.shade600),
+                          ),
+                        )
+                      : ListView.separated(
+                          padding: const EdgeInsets.symmetric(horizontal: 24),
+                          scrollDirection: Axis.horizontal,
+                          itemBuilder: (context, index) {
+                            final folder = folders[index];
+                            return FolderCard(folder: folder);
+                          },
+                          separatorBuilder: (_, __) => const SizedBox(width: 12),
+                          itemCount: folders.length,
+                        ),
+            ),
+
+            const SizedBox(height: 16),
+
             // Files list
             Expanded(
               child: RefreshIndicator(
-                onRefresh: _loadFiles,
+                onRefresh: () async {
+                  await _loadFiles();
+                  await _loadFolders();
+                },
                 child: isLoading
                     ? const Center(
                         child: CircularProgressIndicator(
@@ -225,7 +516,12 @@ class _FilesPageState extends State<FilesPage> {
                             itemCount: filteredFiles.length,
                             itemBuilder: (context, index) {
                               final file = filteredFiles[index];
-                              return FileListItem(file: file);
+                              return FileListItem(
+                                file: file,
+                                onShareSelected: (visibility) {
+                                  _handleShare(file, visibility);
+                                },
+                              );
                             },
                           ),
               ),
@@ -266,16 +562,24 @@ class _FilesPageState extends State<FilesPage> {
 
 // File item model
 class FileItem {
+  final String id;
   final String name;
   final int sizeBytes;
   final FileType type;
   final DateTime? lastModified;
+  final String? downloadUrl;
+  final String? sharingVisibility;
+  final DateTime? sharingExpiresAt;
 
   FileItem({
+    required this.id,
     required this.name,
     required this.sizeBytes,
     required this.type,
     required this.lastModified,
+    this.downloadUrl,
+    this.sharingVisibility,
+    this.sharingExpiresAt,
   });
 }
 
@@ -285,8 +589,13 @@ enum FileType { image, pdf, document, other }
 // File list item widget
 class FileListItem extends StatelessWidget {
   final FileItem file;
+  final void Function(ShareVisibility visibility) onShareSelected;
 
-  const FileListItem({super.key, required this.file});
+  const FileListItem({
+    super.key,
+    required this.file,
+    required this.onShareSelected,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -367,8 +676,24 @@ class FileListItem extends StatelessWidget {
 
           const SizedBox(width: 16),
 
-          // Navigation arrow
-          Icon(Icons.arrow_forward_ios, color: Colors.grey.shade400, size: 16),
+          PopupMenuButton<ShareVisibility>(
+            icon: const Icon(Icons.share, color: Color(0xFF2196F3)),
+            onSelected: onShareSelected,
+            itemBuilder: (context) => const [
+              PopupMenuItem(
+                value: ShareVisibility.public,
+                child: Text('Create public link'),
+              ),
+              PopupMenuItem(
+                value: ShareVisibility.private,
+                child: Text('Private link (signed)'),
+              ),
+              PopupMenuItem(
+                value: ShareVisibility.temporary,
+                child: Text('Temporary link (24h)'),
+              ),
+            ],
+          ),
         ],
       ),
     );
@@ -404,6 +729,90 @@ class FileListItem extends StatelessWidget {
   String _formatDate(DateTime? date) {
     if (date == null) return 'Unknown date';
     return '${date.month}/${date.day}/${date.year}';
+  }
+}
+
+enum ShareVisibility { public, private, temporary }
+
+class FolderItem {
+  final String id;
+  final String name;
+  final String description;
+  final int fileCount;
+
+  FolderItem({
+    required this.id,
+    required this.name,
+    required this.description,
+    required this.fileCount,
+  });
+}
+
+class FolderCard extends StatelessWidget {
+  final FolderItem folder;
+
+  const FolderCard({super.key, required this.folder});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 180,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.grey.shade200),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 8,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE3F2FD),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Icon(Icons.folder, color: Color(0xFF2196F3)),
+              ),
+              const Spacer(),
+              Text(
+                '${folder.fileCount} items',
+                style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            folder.name,
+            style: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+              color: Colors.black,
+            ),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          if (folder.description.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              folder.description,
+              style: TextStyle(color: Colors.grey.shade700),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
+        ],
+      ),
+    );
   }
 }
 
