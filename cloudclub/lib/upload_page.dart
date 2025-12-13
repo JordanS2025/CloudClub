@@ -6,6 +6,7 @@ import 'package:firebase_storage/firebase_storage.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:mime/mime.dart';
 
 class UploadPage extends StatefulWidget {
   const UploadPage({super.key});
@@ -321,12 +322,14 @@ class _UploadPageState extends State<UploadPage> {
 
     try {
       final PlatformFile file = selectedFile!;
-      final storageRef = FirebaseStorage.instance
-          .ref()
-          .child('uploads/${user.uid}/${file.name}');
+      final storageRef = FirebaseStorage.instance.ref().child(
+        'uploads/${user.uid}/${file.name}',
+      );
 
       UploadTask uploadTask;
-      final metadata = SettableMetadata(contentType: file.mimeType);
+      final contentType =
+          lookupMimeType(file.path ?? file.name) ?? 'application/octet-stream';
+      final metadata = SettableMetadata(contentType: contentType);
 
       if (kIsWeb) {
         if (file.bytes == null) {
@@ -354,12 +357,7 @@ class _UploadPageState extends State<UploadPage> {
       final downloadUrl = await completedSnapshot.ref.getDownloadURL();
       final uploadedBytes = completedSnapshot.totalBytes;
 
-      await _saveFileMetadata(
-        user.uid,
-        file.name,
-        uploadedBytes,
-        downloadUrl,
-      );
+      await _saveFileMetadata(user.uid, file.name, uploadedBytes, downloadUrl);
 
       if (mounted) {
         setState(() {
@@ -413,21 +411,18 @@ class _UploadPageState extends State<UploadPage> {
         .doc(userId)
         .collection('files')
         .add({
-      'name': fileName,
-      'size': sizeBytes,
-      'downloadUrl': downloadUrl,
-      'path': 'uploads/$userId/$fileName',
-      'uploadedAt': FieldValue.serverTimestamp(),
-    });
+          'name': fileName,
+          'size': sizeBytes,
+          'downloadUrl': downloadUrl,
+          'path': 'uploads/$userId/$fileName',
+          'uploadedAt': FieldValue.serverTimestamp(),
+        });
 
-    await userDoc.set(
-      {
-        'storage': {
-          'used': FieldValue.increment(sizeBytes),
-          'lastUpdated': FieldValue.serverTimestamp(),
-        },
+    await userDoc.set({
+      'storage': {
+        'used': FieldValue.increment(sizeBytes),
+        'lastUpdated': FieldValue.serverTimestamp(),
       },
-      SetOptions(merge: true),
-    );
+    }, SetOptions(merge: true));
   }
 }
